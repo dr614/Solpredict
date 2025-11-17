@@ -1,332 +1,591 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SolPredict — Advanced Prediction Market (Devnet)</title>
-  <style>
-    :root{
-      --bg:#071023; --card:#0f1724; --accent:#6c8cff; --muted:#98a0b3;
-      --success:#22c55e; --danger:#ef4444;
+solana-prediction-hub/
+├─ backend/
+│  ├─ .env.example
+│  ├─ package.json
+│  ├─ server.js
+│  ├─ models/
+│  │  ├─ User.js
+│  │  ├─ Transaction.js
+│  │  ├─ Prediction.js
+│  │  └─ Vote.js
+│  ├─ services/
+│  │  ├─ jupiterService.js
+│  │  └─ walletService.js
+│  └─ README.md
+└─ frontend/
+   ├─ package.json
+   ├─ next.config.js
+   ├─ .env.local.example
+   └─ src/
+      ├─ pages/
+      │  ├─ _app.js
+      │  ├─ index.js
+      │  ├─ swap.js
+      │  ├─ nft-marketplace.js
+      │  └─ predictions.js
+      ├─ components/
+      │  ├─ WalletProvider.js
+      │  ├─ Navbar.js
+      │  └─ SimpleCard.js
+      ├─ styles/
+      │  └─ globals.css
+      └─ lib/
+         └─ api.js
+
+         MONGO_URI=mongodb://localhost:27017/solana_prediction_hub
+PORT=4000
+CORS_ORIGINS=*
+SOLANA_NETWORK=devnet
+SOLANA_RPC_URL=https://api.devnet.solana.com
+JUPITER_API_URL=https://quote-api.jup.ag/v6
+PLATFORM_FEE_BPS=50
+
+require('dotenv').config();
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const { PublicKey } = require('@solana/web3.js');
+const bodyParser = require('body-parser');
+const jupiterService = require('./services/jupiterService');
+const walletService = require('./services/walletService');
+
+const User = require('./models/User');
+const Transaction = require('./models/Transaction');
+const Prediction = require('./models/Prediction');
+const Vote = require('./models/Vote');
+
+const app = express();
+app.use(cors({ origin: process.env.CORS_ORIGINS?.split(',') || '*' }));
+app.use(bodyParser.json());
+
+const PORT = process.env.PORT || 4000;
+const MONGO = process.env.MONGO_URI || 'mongodb://localhost:27017/solana_prediction_hub';
+
+mongoose.connect(MONGO, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error', err));
+
+// Health
+app.get('/api', (req, res) => res.json({ message: 'Solana Prediction Hub API' }));
+
+/*
+  USER
+*/
+app.post('/api/users', async (req, res) => {
+  try {
+    const { wallet_address } = req.body;
+    if (!wallet_address) return res.status(400).json({ error: 'wallet_address required' });
+    let user = await User.findOne({ wallet_address });
+    if (!user) {
+      user = await User.create({ wallet_address });
     }
-    *{box-sizing:border-box}
-    body{
-      margin:0; font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;
-      background:linear-gradient(135deg,#03102a 0%, #041428 60%); color:#e6eef8;
-      min-height:100vh; display:flex; align-items:center; justify-content:center;
-      padding:28px;
+    res.json(user);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/users/:wallet', async (req, res) => {
+  try {
+    const user = await User.findOne({ wallet_address: req.params.wallet }).lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/users/:wallet/stats', async (req, res) => {
+  try {
+    const wallet = req.params.wallet;
+    const user = await User.findOne({ wallet_address: wallet }).lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const txCount = await Transaction.countDocuments({ user_wallet: wallet });
+    const voteCount = await Vote.countDocuments({ user_wallet: wallet });
+    res.json({
+      wallet_address: wallet,
+      total_staked: user.total_staked || 0,
+      trading_volume: user.trading_volume || 0,
+      points: user.points || 0,
+      total_transactions: txCount,
+      total_votes: voteCount
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/*
+  TRANSACTIONS (mock/staking/swaps)
+*/
+app.post('/api/transactions', async (req, res) => {
+  try {
+    const { user_wallet, tx_type, amount } = req.body;
+    if (!user_wallet || !tx_type || typeof amount !== 'number') {
+      return res.status(400).json({ error: 'user_wallet, tx_type and numeric amount required' });
     }
-    .wrap{width:100%; max-width:980px;}
-    header{display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px}
-    h1{font-size:20px; margin:0}
-    .small{font-size:13px; color:var(--muted)}
-    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:20px; border-radius:12px; box-shadow:0 8px 30px rgba(2,6,23,0.6); border:1px solid rgba(255,255,255,0.03)}
-    .grid{display:grid; grid-template-columns: 1fr 360px; gap:18px}
-    .center{display:flex; align-items:center; gap:10px}
-    button{background:var(--accent); color:#fff; border:0; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600}
-    .btn-ghost{background:transparent; border:1px solid rgba(255,255,255,0.06); color:var(--muted)}
-    input,select{padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:rgba(255,255,255,0.02);color:inherit;width:100%}
-    label{display:block;font-size:13px;color:var(--muted); margin-bottom:6px}
-    .vote-row{display:flex; gap:10px; margin-top:12px}
-    .vote-btn{flex:1;padding:14px;border-radius:10px;font-weight:700; font-size:16px; cursor:pointer}
-    .vote-yes{background:linear-gradient(180deg,#1fb57b,#12955c); color:#042014}
-    .vote-no{background:linear-gradient(180deg,#ff7b7b,#ff5a5a); color:#240606}
-    .tally{display:flex; gap:12px; margin-top:12px}
-    .pill{padding:8px 10px;border-radius:999px;background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03); font-weight:600}
-    .history{max-height:300px; overflow:auto; margin-top:12px; padding-right:6px}
-    .tx{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.02); margin-bottom:8px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent)}
-    footer{margin-top:14px; font-size:13px; color:var(--muted)}
-    .right-col .card{position:sticky; top:20px}
-    .warn{color:var(--muted); font-size:13px}
-    a.link{color:var(--accent); text-decoration:none}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <header>
-      <div>
-        <h1>SolPredict 🔮 — Prediction Market (Devnet)</h1>
-        <div class="small">Advanced demo — records votes as Devnet transactions (demo memo). No production program.</div>
+    const pointsEarned = Math.floor(amount * 10); // simple points calc
+    const tx = await Transaction.create({ user_wallet, tx_type, amount, points_earned: pointsEarned });
+
+    // update user
+    const inc = { $inc: { points: pointsEarned } };
+    if (tx_type === 'stake') inc.$inc.total_staked = amount;
+    if (tx_type === 'swap') inc.$inc.trading_volume = amount;
+    await User.updateOne({ wallet_address: user_wallet }, inc, { upsert: true });
+
+    res.json(tx);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/transactions/:wallet', async (req, res) => {
+  try {
+    const list = await Transaction.find({ user_wallet: req.params.wallet }).sort({ timestamp: -1 }).limit(100).lean();
+    res.json(list);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/*
+  JUPITER QUOTE proxy
+*/
+app.post('/api/jupiter/quote', async (req, res) => {
+  try {
+    const { input_mint, output_mint, amount, slippage_bps } = req.body;
+    const data = await jupiterService.getQuote({ inputMint: input_mint, outputMint: output_mint, amount, slippageBps: slippage_bps || 50 });
+    res.json({ success: true, data });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+/*
+  NFT mock endpoints
+*/
+app.get('/api/nfts/collections', async (req, res) => {
+  const collections = [
+    { symbol: 'degods', name: 'DeGods', image: 'https://creator-hub-prod.s3.us-east-2.amazonaws.com/degods_pfp_1672355330178.gif', floor_price: 125.5, volume_24h: 1250.8, listed_count: 234 },
+    { symbol: 'okay_bears', name: 'Okay Bears', image: 'https://creator-hub-prod.s3.us-east-2.amazonaws.com/okay_bears_pfp_1651545744544.png', floor_price: 42.3, volume_24h: 845.2, listed_count: 456 },
+  ];
+  res.json({ success: true, data: collections });
+});
+
+app.get('/api/nfts/collection/:symbol/listings', async (req, res) => {
+  const symbol = req.params.symbol;
+  const listings = Array.from({ length: 8 }).map((_, i) => ({
+    token_mint: `${symbol}_token_${i}`,
+    name: `${symbol} #${1000 + i}`,
+    image: `https://via.placeholder.com/400?text=${symbol}+${i}`,
+    price: (Math.random() * 100).toFixed(2),
+  }));
+  res.json({ success: true, data: listings });
+});
+
+/*
+  PREDICTIONS & VOTES
+*/
+app.post('/api/predictions', async (req, res) => {
+  try {
+    const { title, description, category, options = [], end_time } = req.body;
+    const pred = await Prediction.create({ title, description, category, options, end_time });
+    res.json(pred);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/predictions', async (req, res) => {
+  const list = await Prediction.find({ status: req.query.status || 'active' }).sort({ created_at: -1 }).limit(100).lean();
+  res.json(list);
+});
+
+app.get('/api/predictions/:id', async (req, res) => {
+  const p = await Prediction.findById(req.params.id).lean();
+  if (!p) return res.status(404).json({ error: 'Not found' });
+  const votes = await Vote.find({ prediction_id: p._id }).lean();
+  const counts = {};
+  (p.options || []).forEach(opt => counts[opt] = votes.filter(v => v.option === opt).length);
+  res.json({ prediction: p, vote_counts: counts, total_votes: votes.length });
+});
+
+app.post('/api/votes', async (req, res) => {
+  try {
+    const { prediction_id, user_wallet, option, points_used } = req.body;
+    const user = await User.findOne({ wallet_address: user_wallet });
+    if (!user || (user.points || 0) < (points_used || 0)) return res.status(400).json({ error: 'Insufficient points' });
+
+    const already = await Vote.findOne({ prediction_id, user_wallet });
+    if (already) return res.status(400).json({ error: 'Already voted' });
+
+    const vote = await Vote.create({ prediction_id, user_wallet, option, points_used: points_used || 0 });
+    await User.updateOne({ wallet_address: user_wallet }, { $inc: { points: -(points_used || 0) } });
+    res.json(vote);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/votes/:wallet', async (req, res) => {
+  const votes = await Vote.find({ user_wallet: req.params.wallet }).sort({ timestamp: -1 }).limit(100).lean();
+  res.json(votes);
+});
+
+/*
+  Wallet signature verification route (server-side)
+  Accepts: { message, signature, publicKey }
+  Verifies signature using @solana/web3.js
+*/
+app.post('/api/wallet/verify', async (req, res) => {
+  try {
+    const { message, signature, publicKey } = req.body;
+    if (!message || !signature || !publicKey) return res.status(400).json({ error: 'message, signature, publicKey required' });
+
+    const verified = walletService.verifySignature(message, signature, publicKey);
+    res.json({ verified });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
+      const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+  wallet_address: { type: String, required: true, unique: true },
+  total_staked: { type: Number, default: 0 },
+  trading_volume: { type: Number, default: 0 },
+  points: { type: Number, default: 0 },
+  created_at: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('User', UserSchema);
+
+
+      const mongoose = require('mongoose');
+
+const TransactionSchema = new mongoose.Schema({
+  user_wallet: String,
+  tx_type: String,
+  amount: Number,
+  points_earned: Number,
+  timestamp: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Transaction', TransactionSchema);
+
+      const mongoose = require('mongoose');
+
+const PredictionSchema = new mongoose.Schema({
+  title: String,
+  description: String,
+  category: String,
+  options: [String],
+  end_time: Date,
+  status: { type: String, default: 'active' },
+  created_at: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Prediction', PredictionSchema);
+
+      const mongoose = require('mongoose');
+
+const VoteSchema = new mongoose.Schema({
+  prediction_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Prediction' },
+  user_wallet: String,
+  option: String,
+  points_used: Number,
+  timestamp: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Vote', VoteSchema);
+
+      
+      const mongoose = require('mongoose');
+
+const VoteSchema = new mongoose.Schema({
+  prediction_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Prediction' },
+  user_wallet: String,
+  option: String,
+  points_used: Number,
+  timestamp: { type: Date, default: Date.now }
+});
+
+module.exports = mongoose.model('Vote', VoteSchema);
+const bs58 = require('bs58');
+const { PublicKey } = require('@solana/web3.js');
+const nacl = require('tweetnacl');
+
+function verifySignature(message, signatureBase58, publicKeyStr) {
+  try {
+    const pubKey = new PublicKey(publicKeyStr);
+    const signature = bs58.decode(signatureBase58);
+    const messageBytes = Buffer.from(message, 'utf8');
+    return nacl.sign.detached.verify(messageBytes, signature, pubKey.toBuffer());
+  } catch (e) {
+    return false;
+  }
+}
+
+module.exports = { verifySignature };
+
+
+# Solana Prediction Hub - Backend
+
+## Setup
+1. Copy `.env.example` to `.env` and set environment variables.
+2. `npm install`
+3. `npm run dev`
+
+Exposes endpoints under `/api/*` for users, transactions, predictions, votes and jupiter proxy.
+
+
+      {
+  "name": "solana-prediction-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000"
+  },
+  "dependencies": {
+    "@solana/wallet-adapter-base": "^0.9.27",
+    "@solana/wallet-adapter-react": "^0.15.39",
+    "@solana/wallet-adapter-react-ui": "^0.9.39",
+    "@solana/wallet-adapter-wallets": "^0.19.37",
+    "@solana/web3.js": "^1.98.4",
+    "axios": "^1.4.0",
+    "next": "13.5.6",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  }
+}NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
+NEXT_PUBLIC_SOLANA_NETWORK=devnet
+
+      
+
+      import '../styles/globals.css';
+import { SolanaWalletProvider } from '../components/WalletProvider';
+import Navbar from '../components/Navbar';
+
+function MyApp({ Component, pageProps }) {
+  return (
+    <SolanaWalletProvider>
+      <Navbar />
+      <main style={{ padding: 20 }}>
+        <Component {...pageProps} />
+      </main>
+    </SolanaWalletProvider>
+  );
+}
+
+export default MyApp;
+
+      import React, { useMemo } from 'react';
+import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+import {
+  PhantomWalletAdapter,
+  SolflareWalletAdapter,
+  BackpackWalletAdapter
+} from '@solana/wallet-adapter-wallets';
+import { clusterApiUrl } from '@solana/web3.js';
+import '@solana/wallet-adapter-react-ui/styles.css';
+
+export const SolanaWalletProvider = ({ children }) => {
+  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'devnet';
+  const endpoint = useMemo(() => clusterApiUrl(network), [network]);
+
+  const wallets = useMemo(() => [
+    new PhantomWalletAdapter(),
+    new SolflareWalletAdapter(),
+    // Backpack may need import adjustments depending on package availability
+    ...(typeof BackpackWalletAdapter !== 'undefined' ? [new BackpackWalletAdapter()] : [])
+  ], []);
+
+  return (
+    <ConnectionProvider endpoint={endpoint}>
+      <WalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>
+          {children}
+        </WalletModalProvider>
+      </WalletProvider>
+    </ConnectionProvider>
+  );
+};
+
+import React from 'react';
+import Link from 'next/link';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+
+export default function Navbar() {
+  return (
+    <nav style={{ display: 'flex', gap: 16, padding: 12, alignItems: 'center', background: 'linear-gradient(90deg,#0ea5e9,#3b82f6)' }}>
+      <div style={{ fontWeight: 700, color: '#fff' }}>Solana Prediction Hub</div>
+      <Link href="/"><a style={{ color: '#fff' }}>Dashboard</a></Link>
+      <Link href="/swap"><a style={{ color: '#fff' }}>Swap</a></Link>
+      <Link href="/nft-marketplace"><a style={{ color: '#fff' }}>NFTs</a></Link>
+      <Link href="/predictions"><a style={{ color: '#fff' }}>Predictions</a></Link>
+      <div style={{ marginLeft: 'auto' }}>
+        <WalletMultiButton />
       </div>
-      <div class="center">
-        <div id="walletInfo" class="small">Not connected</div>
-        <button id="connectBtn">Connect Phantom</button>
-      </div>
-    </header>
+    </nav>
+  );
+}
 
-    <div class="grid">
-      <div>
-        <div class="card">
-          <label>Market</label>
-          <div style="font-weight:700;font-size:18px">Will SOL be above $40 by 2026-01-01?</div>
-          <div class="small" style="margin-top:6px">This is a demo prediction. Votes are recorded to Solana Devnet for verification.</div>
+      
+      const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:4000';
 
-          <div style="margin-top:14px">
-            <label>Stake (optional) — demo only</label>
-            <input id="stakeInput" placeholder="Enter stake in SOL (demo - no actual transfer)" />
-          </div>
+export async function postJSON(path, body) {
+  const res = await fetch(`${BACKEND}/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
 
-          <div class="vote-row">
-            <button id="yesBtn" class="vote-btn vote-yes">YES</button>
-            <button id="noBtn"  class="vote-btn vote-no">NO</button>
-          </div>
+export async function getJSON(path) {
+  const res = await fetch(`${BACKEND}/api${path}`);
+  return res.json();
+}
 
-          <div class="tally" aria-live="polite">
-            <div class="pill">YES: <span id="yesCount">0</span></div>
-            <div class="pill">NO: <span id="noCount">0</span></div>
-            <div class="pill">Total: <span id="totalCount">0</span></div>
-          </div>
+      
+      import React, { useEffect, useState } from 'react';
+import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { postJSON, getJSON } from '../lib/api';
 
-          <div style="margin-top:12px">
-            <label>Status</label>
-            <div id="status" class="small warn">Ready</div>
-          </div>
+export default function Dashboard() {
+  const { publicKey, connected } = useWallet();
+  const { connection } = useConnection();
+  const [balance, setBalance] = useState(0);
+  const [stats, setStats] = useState(null);
 
-          <div style="margin-top:10px">
-            <button id="clearBtn" class="btn-ghost" style="padding:8px 10px">Clear Local History</button>
-          </div>
+  useEffect(() => {
+    if (!connected || !publicKey) return;
+    (async () => {
+      try {
+        const lamports = await connection.getBalance(publicKey);
+        setBalance(lamports / LAMPORTS_PER_SOL);
+
+        await postJSON('/users', { wallet_address: publicKey.toBase58() });
+        const s = await getJSON(`/users/${publicKey.toBase58()}/stats`);
+        setStats(s);
+      } catch (e) { console.error(e); }
+    })();
+  }, [publicKey, connected, connection]);
+
+  return (
+    <div>
+      <h1>Dashboard</h1>
+      <div style={{ display: 'flex', gap: 20 }}>
+        <div style={{ padding: 16, borderRadius: 8, background: '#f8fafc' }}>
+          <h3>Wallet</h3>
+          <p>{publicKey ? publicKey.toBase58() : 'Not connected'}</p>
+          <p>Balance: {balance} SOL</p>
         </div>
-
-        <div class="card" style="margin-top:12px">
-          <label>Recent votes / history (local demo)</label>
-          <div id="history" class="history"></div>
-          <div class="small" style="margin-top:8px">Each vote creates a Devnet transaction (0-lamport + memo). For real tallying, use an on-chain program to store results.</div>
-        </div>
-
-      </div>
-
-      <div class="right-col">
-        <div class="card">
-          <label>Quick actions</label>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button id="openExplorer" class="btn-ghost">Open Devnet Explorer</button>
-            <button id="demoGuide" class="btn-ghost">Demo Instructions</button>
-          </div>
-
-          <hr style="border:none;height:1px;background:rgba(255,255,255,0.03);margin:12px 0" />
-
-          <div>
-            <label>About this repo</label>
-            <div class="small">SolPredict — demo dApp for Indie.fun / hackathons. Uses Phantom wallet and @solana/web3.js (Devnet).</div>
-            <div style="margin-top:10px"><a class="link" href="#" id="githubLink">View GitHub repo</a></div>
-          </div>
-
+        <div style={{ padding: 16, borderRadius: 8, background: '#f8fafc' }}>
+          <h3>Points</h3>
+          <p>{stats ? stats.points : '-'}</p>
+          <p>Staked: {stats ? stats.total_staked : '-'}</p>
+          <p>Trading Volume: {stats ? stats.trading_volume : '-'}</p>
         </div>
       </div>
     </div>
+  );
+}
 
-    <footer class="small">
-      Tip: Switch Phantom to <strong>Devnet</strong> before connecting. This is a demo — do not send real SOL.
-    </footer>
-  </div>
+      import React, { useState } from 'react';
+import { postJSON } from '../lib/api';
 
-  <!-- Load Solana web3 from CDN -->
-  <script src="https://unpkg.com/@solana/web3.js@1.81.0/lib/index.iife.min.js"></script>
+export default function Swap() {
+  const [inputMint, setInputMint] = useState('');
+  const [outputMint, setOutputMint] = useState('');
+  const [amount, setAmount] = useState(0);
+  const [quote, setQuote] = useState(null);
 
-  <script>
-    (function(){
-      const { Connection, clusterApiUrl, Transaction, SystemProgram, TransactionInstruction, PublicKey } = solanaWeb3;
-      const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+  async function getQuote() {
+    const res = await postJSON('/jupiter/quote', { input_mint: inputMint, output_mint: outputMint, amount, slippage_bps: 50 });
+    setQuote(res.data || res);
+  }
 
-      // UI elements
-      const connectBtn = document.getElementById('connectBtn');
-      const walletInfo = document.getElementById('walletInfo');
-      const yesBtn = document.getElementById('yesBtn');
-      const noBtn = document.getElementById('noBtn');
-      const statusEl = document.getElementById('status');
-      const yesCountEl = document.getElementById('yesCount');
-      const noCountEl = document.getElementById('noCount');
-      const totalCountEl = document.getElementById('totalCount');
-      const historyEl = document.getElementById('history');
-      const stakeInput = document.getElementById('stakeInput');
-      const clearBtn = document.getElementById('clearBtn');
-      const openExplorer = document.getElementById('openExplorer');
-      const demoGuide = document.getElementById('demoGuide');
-      const githubLink = document.getElementById('githubLink');
+  return (
+    <div>
+      <h1>Swap (Jupiter)</h1>
+      <div style={{ display: 'grid', gap: 8, maxWidth: 600 }}>
+        <input placeholder="input mint" value={inputMint} onChange={e => setInputMint(e.target.value)} />
+        <input placeholder="output mint" value={outputMint} onChange={e => setOutputMint(e.target.value)} />
+        <input type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} />
+        <button onClick={getQuote}>Get Quote</button>
+        <pre style={{ background: '#111', color: '#0f0', padding: 10 }}>{quote ? JSON.stringify(quote, null, 2) : 'No quote yet'}</pre>
+      </div>
+    </div>
+  );
+}import React, { useEffect, useState } from 'react';
+import { getJSON } from '../lib/api';
 
-      // Config
-      const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
-      const GITHUB_REPO = window.location.hostname.includes('vercel') ? 'https://github.com/dr614/Solpredict' : 'https://github.com/dr614/Solpredict';
-      githubLink.href = GITHUB_REPO;
+export default function NFTMarketplace() {
+  const [collections, setCollections] = useState([]);
 
-      // Local-state storage keys
-      const STORAGE_KEY = 'solpredict_votes_v1';
-
-      let walletPubKey = null;
-      let provider = null;
-
-      function updateStatus(txt, isError){
-        statusEl.textContent = txt;
-        statusEl.style.color = isError ? 'var(--danger)' : 'var(--muted)';
-      }
-
-      function loadLocal(){
-        try{
-          const raw = localStorage.getItem(STORAGE_KEY);
-          return raw ? JSON.parse(raw) : { yes:0, no:0, items:[] };
-        }catch(e){ return { yes:0, no:0, items:[] } }
-      }
-      function saveLocal(obj){ localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); renderLocal(obj); }
-      function renderLocal(obj){
-        yesCountEl.textContent = obj.yes;
-        noCountEl.textContent = obj.no;
-        totalCountEl.textContent = obj.yes + obj.no;
-        historyEl.innerHTML = '';
-        if(obj.items.length === 0){ historyEl.innerHTML = '<div class="small">No votes yet</div>'; return;}
-        obj.items.slice().reverse().forEach(it=>{
-          const d = document.createElement('div'); d.className = 'tx';
-          d.innerHTML = `<div style="display:flex;justify-content:space-between"><div><strong>${it.side}</strong> ${it.stake?`• ${it.stake} SOL`:''}</div><div style="font-size:12px;color:var(--muted)">${new Date(it.ts).toLocaleString()}</div></div><div style="margin-top:6px;font-size:12px;color:var(--muted)">Tx: <a class="link" target="_blank" href="https://explorer.solana.com/tx/${it.txid}?cluster=devnet">${it.txid}</a></div>`;
-          historyEl.appendChild(d);
-        });
-      }
-
-      function ensureProvider(){
-        if('solana' in window){
-          provider = window.solana;
-          if(provider.isPhantom) return true;
-        }
-        provider = null;
-        return false;
-      }
-
-      async function connectWallet(){
-        if(!ensureProvider()){
-          updateStatus('Phantom not found — install from phantom.app', true);
-          if(confirm('Phantom wallet not detected. Open phantom.app to install?')) window.open('https://phantom.app/', '_blank');
-          return;
-        }
-        try{
-          const resp = await provider.connect();
-          walletPubKey = resp.publicKey;
-          walletInfo.textContent = walletPubKey.toString().slice(0,6) + '...' + walletPubKey.toString().slice(-4);
-          connectBtn.textContent = 'Disconnect';
-          updateStatus('Connected to Phantom', false);
-        }catch(e){
-          console.error(e);
-          updateStatus('Connection cancelled', true);
-        }
-      }
-
-      async function disconnectWallet(){
-        if(provider) await provider.disconnect().catch(()=>{});
-        walletPubKey = null;
-        provider = null;
-        walletInfo.textContent = 'Not connected';
-        connectBtn.textContent = 'Connect Phantom';
-        updateStatus('Disconnected', false);
-      }
-
-      async function signAndSendMemo(side, stake){
-        if(!walletPubKey) { alert('Connect Phantom first'); return null; }
-        updateStatus('Preparing transaction...', false);
-        try{
-          // Create a transaction with a 0-lamport SystemProgram transfer (no SOL moved) and a memo instruction
-          const tx = new Transaction();
-          // optional: add a tiny 0-lamport transfer to make the tx visible (from->to same)
-          tx.add(SystemProgram.transfer({
-            fromPubkey: walletPubKey,
-            toPubkey: walletPubKey,
-            lamports: 0
-          }));
-
-          // memo instruction data (we encode a small JSON)
-          const memoObj = { app: 'SolPredict', side, stake: stake || null, ts: Date.now() };
-          const memoIx = new TransactionInstruction({
-            keys: [],
-            programId: MEMO_PROGRAM_ID,
-            data: Buffer.from(JSON.stringify(memoObj))
-          });
-          tx.add(memoIx);
-
-          tx.feePayer = walletPubKey;
-          const { blockhash } = await connection.getRecentBlockhash('confirmed');
-          tx.recentBlockhash = blockhash;
-
-          // Phantom requires signTransaction
-          const signed = await provider.signTransaction(tx);
-          const raw = signed.serialize();
-          const txid = await connection.sendRawTransaction(raw);
-          await connection.confirmTransaction(txid, 'confirmed');
-          updateStatus('Transaction confirmed: ' + txid, false);
-          return txid;
-        }catch(err){
-          console.error(err);
-          updateStatus('Tx error: '+ (err.message || err), true);
-          return null;
-        }
-      }
-
-      // Handlers
-      connectBtn.addEventListener('click', async ()=>{
-        if(provider && provider.isConnected) { await disconnectWallet(); return; }
-        await connectWallet();
-      });
-
-      yesBtn.addEventListener('click', async ()=>{
-        await handleVote('YES');
-      });
-      noBtn.addEventListener('click', async ()=>{
-        await handleVote('NO');
-      });
-
-      clearBtn.addEventListener('click', ()=>{
-        if(!confirm('Clear local vote history? This does not affect blockchain data.')) return;
-        localStorage.removeItem(STORAGE_KEY);
-        renderLocal({ yes:0, no:0, items:[] });
-        updateStatus('Local history cleared', false);
-      });
-
-      openExplorer.addEventListener('click', ()=>{
-        window.open('https://explorer.solana.com/?cluster=devnet','_blank');
-      });
-      demoGuide.addEventListener('click', ()=>{
-        alert('Demo steps:\\n1) Install Phantom and switch to Devnet.\\n2) Connect Phantom.\\n3) (Optional) Enter a stake amount for demonstration.\\n4) Click YES or NO.\\n5) Approve the Phantom signature.\\n6) Check vote appears in recent votes list.');
-      });
-
-      async function handleVote(side){
-        const stake = stakeInput.value && !isNaN(parseFloat(stakeInput.value)) ? parseFloat(stakeInput.value) : null;
-        if(!walletPubKey){
-          if(!ensureProvider()){ if(confirm('Phantom not detected — open phantom.app?')) window.open('https://phantom.app/','_blank'); return; }
-          await connectWallet();
-          if(!walletPubKey) return;
-        }
-        if(!confirm(`Submit vote "${side}"${stake?` with demo stake ${stake} SOL`:''}?`)) return;
-        updateStatus('Submitting vote — please approve in Phantom', false);
-        const txid = await signAndSendMemo(side, stake);
-        if(txid){
-          // update local storage tally & history
-          const state = loadLocal();
-          if(side === 'YES') state.yes = (state.yes || 0) + 1;
-          else state.no = (state.no || 0) + 1;
-          state.items = state.items || [];
-          state.items.push({ side, stake, txid, ts: Date.now() });
-          saveLocal(state);
-        } else {
-          updateStatus('Vote not recorded (transaction failed)', true);
-        }
-      }
-
-      // Init
-      (function init(){
-        // detect Phantom
-        ensureProvider();
-        if(provider && provider.isConnected){
-          walletPubKey = provider.publicKey;
-          walletInfo.textContent = walletPubKey.toString().slice(0,6) + '...' + walletPubKey.toString().slice(-4);
-          connectBtn.textContent = 'Disconnect';
-          updateStatus('Connected', false);
-        } else {
-          walletInfo.textContent = 'Not connected';
-          connectBtn.textContent = 'Connect Phantom';
-          updateStatus('Ready', false);
-        }
-        const state = loadLocal();
-        renderLocal(state);
-      })();
-
-      // expose for debugging (optional)
-      window._solpredict = { connection, loadLocal, saveLocal };
+  useEffect(() => {
+    (async () => {
+      const res = await getJSON('/nfts/collections');
+      setCollections(res.data || []);
     })();
-  </script>
-</body>
-</html>
+  }, []);
+
+  return (
+    <div>
+      <h1>NFT Marketplace (Mock)</h1>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        {collections.map(c => (
+          <div key={c.symbol} style={{ padding: 12, borderRadius: 8, background: '#fff', width: 240 }}>
+            <img src={c.image} alt={c.name} style={{ width: '100%', height: 140, objectFit: 'cover' }} />
+            <h3>{c.name}</h3>
+            <p>Floor: {c.floor_price}</p>
+            <p>24h Volume: {c.volume_24h}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+import React, { useEffect, useState } from 'react';
+import { getJSON, postJSON } from '../lib/api';
+import { useWallet } from '@solana/wallet-adapter-react';
+
+export default function Predictions() {
+  const [predictions, setPredictions] = useState([]);
+  const { publicKey } = useWallet();
+
+  useEffect(() => {
+    (async () => {
+      const res = await getJSON('/predictions');
+      setPredictions(res || []);
+    })();
+  }, []);
+
+  async function vote(predictionId, option) {
+    if (!publicKey) return alert('Connect wallet');
+    const res = await postJSON('/votes', { prediction_id: predictionId, user_wallet: publicKey.toBase58(), option, points_used: 10 });
+    alert(res.error ? res.error : 'Voted!');
+  }
+
+  return (
+    <div>
+      <h1>Predictions</h1>
+      <div style={{ display: 'grid', gap: 12 }}>
+        {predictions.map(p => (
+          <div key={p._id} style={{ padding: 12, borderRadius: 8, background: '#fff' }}>
+            <h3>{p.title}</h3>
+            <p>{p.description}</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {(p.options || []).map(opt => (
+                <button key={opt} onClick={() => vote(p._id, opt)}>{opt}</button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+      html,body,#__next { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background: linear-gradient(180deg,#071013,#001219); color: #e6f0ff; }
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; padding: 8px 12px; border-radius: 8px; border: none; background: #06b6d4; color: #052026; }
+input { padding: 8px 10px; border-radius: 8px; border: 1px solid #0ea5e9; }
+main { max-width: 1100px; margin: 24px auto; }
+
+      
+      
+
+
+      
+      

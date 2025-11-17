@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SolPredict — Simple Prediction Market</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0c0f1a;
+      color: white;
+      text-align: center;
+      padding: 40px;
+    }
+    .card {
+      background: #1a1f33;
+      padding: 20px;
+      border-radius: 12px;
+      width: 90%;
+      max-width: 400px;
+      margin: auto;
+      box-shadow: 0 0 20px rgba(0,0,0,0.4);
+    }
+    button {
+      background: #4c6ef5;
+      color: white;
+      border: none;
+      padding: 12px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      margin: 10px;
+      font-size: 16px;
+    }
+    button:hover {
+      background: #3d5bd1;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>SolPredict 🔮</h1>
+  <p>A simple Solana prediction market demo for Indiefun Hackathon.</p>
+
+  <div class="card">
+    <h2>Will SOL go up today?</h2>
+
+    <button onclick="vote('YES')">YES 👍</button>
+    <button onclick="vote('NO')">NO 👎</button>
+
+    <p id="status" style="margin-top:20px;"></p>
+  </div>
+
+
+<script>
+  function vote(choice) {
+    document.getElementById("status").innerHTML =
+      "🔗 Demo vote recorded: <b>" + choice + "</b><br>(No wallet needed)";
+  }
+</script>
+
+</body>
+</html>

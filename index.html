@@ -1,63 +1,332 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SolPredict — Simple Prediction Market</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SolPredict — Advanced Prediction Market (Devnet)</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #0c0f1a;
-      color: white;
-      text-align: center;
-      padding: 40px;
+    :root{
+      --bg:#071023; --card:#0f1724; --accent:#6c8cff; --muted:#98a0b3;
+      --success:#22c55e; --danger:#ef4444;
     }
-    .card {
-      background: #1a1f33;
-      padding: 20px;
-      border-radius: 12px;
-      width: 90%;
-      max-width: 400px;
-      margin: auto;
-      box-shadow: 0 0 20px rgba(0,0,0,0.4);
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;
+      background:linear-gradient(135deg,#03102a 0%, #041428 60%); color:#e6eef8;
+      min-height:100vh; display:flex; align-items:center; justify-content:center;
+      padding:28px;
     }
-    button {
-      background: #4c6ef5;
-      color: white;
-      border: none;
-      padding: 12px 18px;
-      border-radius: 8px;
-      cursor: pointer;
-      margin: 10px;
-      font-size: 16px;
-    }
-    button:hover {
-      background: #3d5bd1;
-    }
+    .wrap{width:100%; max-width:980px;}
+    header{display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px}
+    h1{font-size:20px; margin:0}
+    .small{font-size:13px; color:var(--muted)}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); padding:20px; border-radius:12px; box-shadow:0 8px 30px rgba(2,6,23,0.6); border:1px solid rgba(255,255,255,0.03)}
+    .grid{display:grid; grid-template-columns: 1fr 360px; gap:18px}
+    .center{display:flex; align-items:center; gap:10px}
+    button{background:var(--accent); color:#fff; border:0; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600}
+    .btn-ghost{background:transparent; border:1px solid rgba(255,255,255,0.06); color:var(--muted)}
+    input,select{padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:rgba(255,255,255,0.02);color:inherit;width:100%}
+    label{display:block;font-size:13px;color:var(--muted); margin-bottom:6px}
+    .vote-row{display:flex; gap:10px; margin-top:12px}
+    .vote-btn{flex:1;padding:14px;border-radius:10px;font-weight:700; font-size:16px; cursor:pointer}
+    .vote-yes{background:linear-gradient(180deg,#1fb57b,#12955c); color:#042014}
+    .vote-no{background:linear-gradient(180deg,#ff7b7b,#ff5a5a); color:#240606}
+    .tally{display:flex; gap:12px; margin-top:12px}
+    .pill{padding:8px 10px;border-radius:999px;background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.03); font-weight:600}
+    .history{max-height:300px; overflow:auto; margin-top:12px; padding-right:6px}
+    .tx{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.02); margin-bottom:8px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent)}
+    footer{margin-top:14px; font-size:13px; color:var(--muted)}
+    .right-col .card{position:sticky; top:20px}
+    .warn{color:var(--muted); font-size:13px}
+    a.link{color:var(--accent); text-decoration:none}
   </style>
 </head>
-
 <body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>SolPredict 🔮 — Prediction Market (Devnet)</h1>
+        <div class="small">Advanced demo — records votes as Devnet transactions (demo memo). No production program.</div>
+      </div>
+      <div class="center">
+        <div id="walletInfo" class="small">Not connected</div>
+        <button id="connectBtn">Connect Phantom</button>
+      </div>
+    </header>
 
-  <h1>SolPredict 🔮</h1>
-  <p>A simple Solana prediction market demo for Indiefun Hackathon.</p>
+    <div class="grid">
+      <div>
+        <div class="card">
+          <label>Market</label>
+          <div style="font-weight:700;font-size:18px">Will SOL be above $40 by 2026-01-01?</div>
+          <div class="small" style="margin-top:6px">This is a demo prediction. Votes are recorded to Solana Devnet for verification.</div>
 
-  <div class="card">
-    <h2>Will SOL go up today?</h2>
+          <div style="margin-top:14px">
+            <label>Stake (optional) — demo only</label>
+            <input id="stakeInput" placeholder="Enter stake in SOL (demo - no actual transfer)" />
+          </div>
 
-    <button onclick="vote('YES')">YES 👍</button>
-    <button onclick="vote('NO')">NO 👎</button>
+          <div class="vote-row">
+            <button id="yesBtn" class="vote-btn vote-yes">YES</button>
+            <button id="noBtn"  class="vote-btn vote-no">NO</button>
+          </div>
 
-    <p id="status" style="margin-top:20px;"></p>
+          <div class="tally" aria-live="polite">
+            <div class="pill">YES: <span id="yesCount">0</span></div>
+            <div class="pill">NO: <span id="noCount">0</span></div>
+            <div class="pill">Total: <span id="totalCount">0</span></div>
+          </div>
+
+          <div style="margin-top:12px">
+            <label>Status</label>
+            <div id="status" class="small warn">Ready</div>
+          </div>
+
+          <div style="margin-top:10px">
+            <button id="clearBtn" class="btn-ghost" style="padding:8px 10px">Clear Local History</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <label>Recent votes / history (local demo)</label>
+          <div id="history" class="history"></div>
+          <div class="small" style="margin-top:8px">Each vote creates a Devnet transaction (0-lamport + memo). For real tallying, use an on-chain program to store results.</div>
+        </div>
+
+      </div>
+
+      <div class="right-col">
+        <div class="card">
+          <label>Quick actions</label>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button id="openExplorer" class="btn-ghost">Open Devnet Explorer</button>
+            <button id="demoGuide" class="btn-ghost">Demo Instructions</button>
+          </div>
+
+          <hr style="border:none;height:1px;background:rgba(255,255,255,0.03);margin:12px 0" />
+
+          <div>
+            <label>About this repo</label>
+            <div class="small">SolPredict — demo dApp for Indie.fun / hackathons. Uses Phantom wallet and @solana/web3.js (Devnet).</div>
+            <div style="margin-top:10px"><a class="link" href="#" id="githubLink">View GitHub repo</a></div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <footer class="small">
+      Tip: Switch Phantom to <strong>Devnet</strong> before connecting. This is a demo — do not send real SOL.
+    </footer>
   </div>
 
+  <!-- Load Solana web3 from CDN -->
+  <script src="https://unpkg.com/@solana/web3.js@1.81.0/lib/index.iife.min.js"></script>
 
-<script>
-  function vote(choice) {
-    document.getElementById("status").innerHTML =
-      "🔗 Demo vote recorded: <b>" + choice + "</b><br>(No wallet needed)";
-  }
-</script>
+  <script>
+    (function(){
+      const { Connection, clusterApiUrl, Transaction, SystemProgram, TransactionInstruction, PublicKey } = solanaWeb3;
+      const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
+      // UI elements
+      const connectBtn = document.getElementById('connectBtn');
+      const walletInfo = document.getElementById('walletInfo');
+      const yesBtn = document.getElementById('yesBtn');
+      const noBtn = document.getElementById('noBtn');
+      const statusEl = document.getElementById('status');
+      const yesCountEl = document.getElementById('yesCount');
+      const noCountEl = document.getElementById('noCount');
+      const totalCountEl = document.getElementById('totalCount');
+      const historyEl = document.getElementById('history');
+      const stakeInput = document.getElementById('stakeInput');
+      const clearBtn = document.getElementById('clearBtn');
+      const openExplorer = document.getElementById('openExplorer');
+      const demoGuide = document.getElementById('demoGuide');
+      const githubLink = document.getElementById('githubLink');
+
+      // Config
+      const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
+      const GITHUB_REPO = window.location.hostname.includes('vercel') ? 'https://github.com/dr614/Solpredict' : 'https://github.com/dr614/Solpredict';
+      githubLink.href = GITHUB_REPO;
+
+      // Local-state storage keys
+      const STORAGE_KEY = 'solpredict_votes_v1';
+
+      let walletPubKey = null;
+      let provider = null;
+
+      function updateStatus(txt, isError){
+        statusEl.textContent = txt;
+        statusEl.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+      }
+
+      function loadLocal(){
+        try{
+          const raw = localStorage.getItem(STORAGE_KEY);
+          return raw ? JSON.parse(raw) : { yes:0, no:0, items:[] };
+        }catch(e){ return { yes:0, no:0, items:[] } }
+      }
+      function saveLocal(obj){ localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); renderLocal(obj); }
+      function renderLocal(obj){
+        yesCountEl.textContent = obj.yes;
+        noCountEl.textContent = obj.no;
+        totalCountEl.textContent = obj.yes + obj.no;
+        historyEl.innerHTML = '';
+        if(obj.items.length === 0){ historyEl.innerHTML = '<div class="small">No votes yet</div>'; return;}
+        obj.items.slice().reverse().forEach(it=>{
+          const d = document.createElement('div'); d.className = 'tx';
+          d.innerHTML = `<div style="display:flex;justify-content:space-between"><div><strong>${it.side}</strong> ${it.stake?`• ${it.stake} SOL`:''}</div><div style="font-size:12px;color:var(--muted)">${new Date(it.ts).toLocaleString()}</div></div><div style="margin-top:6px;font-size:12px;color:var(--muted)">Tx: <a class="link" target="_blank" href="https://explorer.solana.com/tx/${it.txid}?cluster=devnet">${it.txid}</a></div>`;
+          historyEl.appendChild(d);
+        });
+      }
+
+      function ensureProvider(){
+        if('solana' in window){
+          provider = window.solana;
+          if(provider.isPhantom) return true;
+        }
+        provider = null;
+        return false;
+      }
+
+      async function connectWallet(){
+        if(!ensureProvider()){
+          updateStatus('Phantom not found — install from phantom.app', true);
+          if(confirm('Phantom wallet not detected. Open phantom.app to install?')) window.open('https://phantom.app/', '_blank');
+          return;
+        }
+        try{
+          const resp = await provider.connect();
+          walletPubKey = resp.publicKey;
+          walletInfo.textContent = walletPubKey.toString().slice(0,6) + '...' + walletPubKey.toString().slice(-4);
+          connectBtn.textContent = 'Disconnect';
+          updateStatus('Connected to Phantom', false);
+        }catch(e){
+          console.error(e);
+          updateStatus('Connection cancelled', true);
+        }
+      }
+
+      async function disconnectWallet(){
+        if(provider) await provider.disconnect().catch(()=>{});
+        walletPubKey = null;
+        provider = null;
+        walletInfo.textContent = 'Not connected';
+        connectBtn.textContent = 'Connect Phantom';
+        updateStatus('Disconnected', false);
+      }
+
+      async function signAndSendMemo(side, stake){
+        if(!walletPubKey) { alert('Connect Phantom first'); return null; }
+        updateStatus('Preparing transaction...', false);
+        try{
+          // Create a transaction with a 0-lamport SystemProgram transfer (no SOL moved) and a memo instruction
+          const tx = new Transaction();
+          // optional: add a tiny 0-lamport transfer to make the tx visible (from->to same)
+          tx.add(SystemProgram.transfer({
+            fromPubkey: walletPubKey,
+            toPubkey: walletPubKey,
+            lamports: 0
+          }));
+
+          // memo instruction data (we encode a small JSON)
+          const memoObj = { app: 'SolPredict', side, stake: stake || null, ts: Date.now() };
+          const memoIx = new TransactionInstruction({
+            keys: [],
+            programId: MEMO_PROGRAM_ID,
+            data: Buffer.from(JSON.stringify(memoObj))
+          });
+          tx.add(memoIx);
+
+          tx.feePayer = walletPubKey;
+          const { blockhash } = await connection.getRecentBlockhash('confirmed');
+          tx.recentBlockhash = blockhash;
+
+          // Phantom requires signTransaction
+          const signed = await provider.signTransaction(tx);
+          const raw = signed.serialize();
+          const txid = await connection.sendRawTransaction(raw);
+          await connection.confirmTransaction(txid, 'confirmed');
+          updateStatus('Transaction confirmed: ' + txid, false);
+          return txid;
+        }catch(err){
+          console.error(err);
+          updateStatus('Tx error: '+ (err.message || err), true);
+          return null;
+        }
+      }
+
+      // Handlers
+      connectBtn.addEventListener('click', async ()=>{
+        if(provider && provider.isConnected) { await disconnectWallet(); return; }
+        await connectWallet();
+      });
+
+      yesBtn.addEventListener('click', async ()=>{
+        await handleVote('YES');
+      });
+      noBtn.addEventListener('click', async ()=>{
+        await handleVote('NO');
+      });
+
+      clearBtn.addEventListener('click', ()=>{
+        if(!confirm('Clear local vote history? This does not affect blockchain data.')) return;
+        localStorage.removeItem(STORAGE_KEY);
+        renderLocal({ yes:0, no:0, items:[] });
+        updateStatus('Local history cleared', false);
+      });
+
+      openExplorer.addEventListener('click', ()=>{
+        window.open('https://explorer.solana.com/?cluster=devnet','_blank');
+      });
+      demoGuide.addEventListener('click', ()=>{
+        alert('Demo steps:\\n1) Install Phantom and switch to Devnet.\\n2) Connect Phantom.\\n3) (Optional) Enter a stake amount for demonstration.\\n4) Click YES or NO.\\n5) Approve the Phantom signature.\\n6) Check vote appears in recent votes list.');
+      });
+
+      async function handleVote(side){
+        const stake = stakeInput.value && !isNaN(parseFloat(stakeInput.value)) ? parseFloat(stakeInput.value) : null;
+        if(!walletPubKey){
+          if(!ensureProvider()){ if(confirm('Phantom not detected — open phantom.app?')) window.open('https://phantom.app/','_blank'); return; }
+          await connectWallet();
+          if(!walletPubKey) return;
+        }
+        if(!confirm(`Submit vote "${side}"${stake?` with demo stake ${stake} SOL`:''}?`)) return;
+        updateStatus('Submitting vote — please approve in Phantom', false);
+        const txid = await signAndSendMemo(side, stake);
+        if(txid){
+          // update local storage tally & history
+          const state = loadLocal();
+          if(side === 'YES') state.yes = (state.yes || 0) + 1;
+          else state.no = (state.no || 0) + 1;
+          state.items = state.items || [];
+          state.items.push({ side, stake, txid, ts: Date.now() });
+          saveLocal(state);
+        } else {
+          updateStatus('Vote not recorded (transaction failed)', true);
+        }
+      }
+
+      // Init
+      (function init(){
+        // detect Phantom
+        ensureProvider();
+        if(provider && provider.isConnected){
+          walletPubKey = provider.publicKey;
+          walletInfo.textContent = walletPubKey.toString().slice(0,6) + '...' + walletPubKey.toString().slice(-4);
+          connectBtn.textContent = 'Disconnect';
+          updateStatus('Connected', false);
+        } else {
+          walletInfo.textContent = 'Not connected';
+          connectBtn.textContent = 'Connect Phantom';
+          updateStatus('Ready', false);
+        }
+        const state = loadLocal();
+        renderLocal(state);
+      })();
+
+      // expose for debugging (optional)
+      window._solpredict = { connection, loadLocal, saveLocal };
+    })();
+  </script>
 </body>
 </html>

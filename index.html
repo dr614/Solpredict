@@ -1,591 +1,337 @@
-solana-prediction-hub/
-├─ backend/
-│  ├─ .env.example
-│  ├─ package.json
-│  ├─ server.js
-│  ├─ models/
-│  │  ├─ User.js
-│  │  ├─ Transaction.js
-│  │  ├─ Prediction.js
-│  │  └─ Vote.js
-│  ├─ services/
-│  │  ├─ jupiterService.js
-│  │  └─ walletService.js
-│  └─ README.md
-└─ frontend/
+Solana Voting & Prediction Platform — GitHub Repo
+
+/
+├─ package.json
+├─ README.md
+├─ vite.config.js
+├─ tailwind.config.cjs
+├─ postcss.config.cjs
+├─ .env.example
+├─ src/
+│  ├─ main.jsx
+│  ├─ App.jsx
+│  ├─ index.css
+│  ├─ hooks/usePoints.js
+│  ├─ components/
+│  │   ├─ WalletProvider.jsx
+│  │   ├─ Navbar.jsx
+│  │   ├─ Dashboard.jsx
+│  │   ├─ Staking.jsx
+│  │   ├─ Swap.jsx
+│  │   ├─ NFTMarket.jsx
+│  │   └─ About.jsx
+│  └─ utils/solana.js
+└─ server/
    ├─ package.json
-   ├─ next.config.js
-   ├─ .env.local.example
-   └─ src/
-      ├─ pages/
-      │  ├─ _app.js
-      │  ├─ index.js
-      │  ├─ swap.js
-      │  ├─ nft-marketplace.js
-      │  └─ predictions.js
-      ├─ components/
-      │  ├─ WalletProvider.js
-      │  ├─ Navbar.js
-      │  └─ SimpleCard.js
-      ├─ styles/
-      │  └─ globals.css
-      └─ lib/
-         └─ api.js
-
-         MONGO_URI=mongodb://localhost:27017/solana_prediction_hub
-PORT=4000
-CORS_ORIGINS=*
-SOLANA_NETWORK=devnet
-SOLANA_RPC_URL=https://api.devnet.solana.com
-JUPITER_API_URL=https://quote-api.jup.ag/v6
-PLATFORM_FEE_BPS=50
-
-require('dotenv').config();
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const { PublicKey } = require('@solana/web3.js');
-const bodyParser = require('body-parser');
-const jupiterService = require('./services/jupiterService');
-const walletService = require('./services/walletService');
-
-const User = require('./models/User');
-const Transaction = require('./models/Transaction');
-const Prediction = require('./models/Prediction');
-const Vote = require('./models/Vote');
-
-const app = express();
-app.use(cors({ origin: process.env.CORS_ORIGINS?.split(',') || '*' }));
-app.use(bodyParser.json());
-
-const PORT = process.env.PORT || 4000;
-const MONGO = process.env.MONGO_URI || 'mongodb://localhost:27017/solana_prediction_hub';
-
-mongoose.connect(MONGO, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB error', err));
-
-// Health
-app.get('/api', (req, res) => res.json({ message: 'Solana Prediction Hub API' }));
-
-/*
-  USER
-*/
-app.post('/api/users', async (req, res) => {
-  try {
-    const { wallet_address } = req.body;
-    if (!wallet_address) return res.status(400).json({ error: 'wallet_address required' });
-    let user = await User.findOne({ wallet_address });
-    if (!user) {
-      user = await User.create({ wallet_address });
-    }
-    res.json(user);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/users/:wallet', async (req, res) => {
-  try {
-    const user = await User.findOne({ wallet_address: req.params.wallet }).lean();
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/users/:wallet/stats', async (req, res) => {
-  try {
-    const wallet = req.params.wallet;
-    const user = await User.findOne({ wallet_address: wallet }).lean();
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    const txCount = await Transaction.countDocuments({ user_wallet: wallet });
-    const voteCount = await Vote.countDocuments({ user_wallet: wallet });
-    res.json({
-      wallet_address: wallet,
-      total_staked: user.total_staked || 0,
-      trading_volume: user.trading_volume || 0,
-      points: user.points || 0,
-      total_transactions: txCount,
-      total_votes: voteCount
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-/*
-  TRANSACTIONS (mock/staking/swaps)
-*/
-app.post('/api/transactions', async (req, res) => {
-  try {
-    const { user_wallet, tx_type, amount } = req.body;
-    if (!user_wallet || !tx_type || typeof amount !== 'number') {
-      return res.status(400).json({ error: 'user_wallet, tx_type and numeric amount required' });
-    }
-    const pointsEarned = Math.floor(amount * 10); // simple points calc
-    const tx = await Transaction.create({ user_wallet, tx_type, amount, points_earned: pointsEarned });
-
-    // update user
-    const inc = { $inc: { points: pointsEarned } };
-    if (tx_type === 'stake') inc.$inc.total_staked = amount;
-    if (tx_type === 'swap') inc.$inc.trading_volume = amount;
-    await User.updateOne({ wallet_address: user_wallet }, inc, { upsert: true });
-
-    res.json(tx);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/transactions/:wallet', async (req, res) => {
-  try {
-    const list = await Transaction.find({ user_wallet: req.params.wallet }).sort({ timestamp: -1 }).limit(100).lean();
-    res.json(list);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-/*
-  JUPITER QUOTE proxy
-*/
-app.post('/api/jupiter/quote', async (req, res) => {
-  try {
-    const { input_mint, output_mint, amount, slippage_bps } = req.body;
-    const data = await jupiterService.getQuote({ inputMint: input_mint, outputMint: output_mint, amount, slippageBps: slippage_bps || 50 });
-    res.json({ success: true, data });
-  } catch (e) { res.status(400).json({ error: e.message }); }
-});
-
-/*
-  NFT mock endpoints
-*/
-app.get('/api/nfts/collections', async (req, res) => {
-  const collections = [
-    { symbol: 'degods', name: 'DeGods', image: 'https://creator-hub-prod.s3.us-east-2.amazonaws.com/degods_pfp_1672355330178.gif', floor_price: 125.5, volume_24h: 1250.8, listed_count: 234 },
-    { symbol: 'okay_bears', name: 'Okay Bears', image: 'https://creator-hub-prod.s3.us-east-2.amazonaws.com/okay_bears_pfp_1651545744544.png', floor_price: 42.3, volume_24h: 845.2, listed_count: 456 },
-  ];
-  res.json({ success: true, data: collections });
-});
-
-app.get('/api/nfts/collection/:symbol/listings', async (req, res) => {
-  const symbol = req.params.symbol;
-  const listings = Array.from({ length: 8 }).map((_, i) => ({
-    token_mint: `${symbol}_token_${i}`,
-    name: `${symbol} #${1000 + i}`,
-    image: `https://via.placeholder.com/400?text=${symbol}+${i}`,
-    price: (Math.random() * 100).toFixed(2),
-  }));
-  res.json({ success: true, data: listings });
-});
-
-/*
-  PREDICTIONS & VOTES
-*/
-app.post('/api/predictions', async (req, res) => {
-  try {
-    const { title, description, category, options = [], end_time } = req.body;
-    const pred = await Prediction.create({ title, description, category, options, end_time });
-    res.json(pred);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/predictions', async (req, res) => {
-  const list = await Prediction.find({ status: req.query.status || 'active' }).sort({ created_at: -1 }).limit(100).lean();
-  res.json(list);
-});
-
-app.get('/api/predictions/:id', async (req, res) => {
-  const p = await Prediction.findById(req.params.id).lean();
-  if (!p) return res.status(404).json({ error: 'Not found' });
-  const votes = await Vote.find({ prediction_id: p._id }).lean();
-  const counts = {};
-  (p.options || []).forEach(opt => counts[opt] = votes.filter(v => v.option === opt).length);
-  res.json({ prediction: p, vote_counts: counts, total_votes: votes.length });
-});
-
-app.post('/api/votes', async (req, res) => {
-  try {
-    const { prediction_id, user_wallet, option, points_used } = req.body;
-    const user = await User.findOne({ wallet_address: user_wallet });
-    if (!user || (user.points || 0) < (points_used || 0)) return res.status(400).json({ error: 'Insufficient points' });
-
-    const already = await Vote.findOne({ prediction_id, user_wallet });
-    if (already) return res.status(400).json({ error: 'Already voted' });
-
-    const vote = await Vote.create({ prediction_id, user_wallet, option, points_used: points_used || 0 });
-    await User.updateOne({ wallet_address: user_wallet }, { $inc: { points: -(points_used || 0) } });
-    res.json(vote);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/votes/:wallet', async (req, res) => {
-  const votes = await Vote.find({ user_wallet: req.params.wallet }).sort({ timestamp: -1 }).limit(100).lean();
-  res.json(votes);
-});
-
-/*
-  Wallet signature verification route (server-side)
-  Accepts: { message, signature, publicKey }
-  Verifies signature using @solana/web3.js
-*/
-app.post('/api/wallet/verify', async (req, res) => {
-  try {
-    const { message, signature, publicKey } = req.body;
-    if (!message || !signature || !publicKey) return res.status(400).json({ error: 'message, signature, publicKey required' });
-
-    const verified = walletService.verifySignature(message, signature, publicKey);
-    res.json({ verified });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
-
-      const mongoose = require('mongoose');
-
-const UserSchema = new mongoose.Schema({
-  wallet_address: { type: String, required: true, unique: true },
-  total_staked: { type: Number, default: 0 },
-  trading_volume: { type: Number, default: 0 },
-  points: { type: Number, default: 0 },
-  created_at: { type: Date, default: Date.now }
-});
-
-module.exports = mongoose.model('User', UserSchema);
+   └─ index.js
 
 
-      const mongoose = require('mongoose');
+---
 
-const TransactionSchema = new mongoose.Schema({
-  user_wallet: String,
-  tx_type: String,
-  amount: Number,
-  points_earned: Number,
-  timestamp: { type: Date, default: Date.now }
-});
+package.json
 
-module.exports = mongoose.model('Transaction', TransactionSchema);
-
-      const mongoose = require('mongoose');
-
-const PredictionSchema = new mongoose.Schema({
-  title: String,
-  description: String,
-  category: String,
-  options: [String],
-  end_time: Date,
-  status: { type: String, default: 'active' },
-  created_at: { type: Date, default: Date.now }
-});
-
-module.exports = mongoose.model('Prediction', PredictionSchema);
-
-      const mongoose = require('mongoose');
-
-const VoteSchema = new mongoose.Schema({
-  prediction_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Prediction' },
-  user_wallet: String,
-  option: String,
-  points_used: Number,
-  timestamp: { type: Date, default: Date.now }
-});
-
-module.exports = mongoose.model('Vote', VoteSchema);
-
-      
-      const mongoose = require('mongoose');
-
-const VoteSchema = new mongoose.Schema({
-  prediction_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Prediction' },
-  user_wallet: String,
-  option: String,
-  points_used: Number,
-  timestamp: { type: Date, default: Date.now }
-});
-
-module.exports = mongoose.model('Vote', VoteSchema);
-const bs58 = require('bs58');
-const { PublicKey } = require('@solana/web3.js');
-const nacl = require('tweetnacl');
-
-function verifySignature(message, signatureBase58, publicKeyStr) {
-  try {
-    const pubKey = new PublicKey(publicKeyStr);
-    const signature = bs58.decode(signatureBase58);
-    const messageBytes = Buffer.from(message, 'utf8');
-    return nacl.sign.detached.verify(messageBytes, signature, pubKey.toBuffer());
-  } catch (e) {
-    return false;
-  }
-}
-
-module.exports = { verifySignature };
-
-
-# Solana Prediction Hub - Backend
-
-## Setup
-1. Copy `.env.example` to `.env` and set environment variables.
-2. `npm install`
-3. `npm run dev`
-
-Exposes endpoints under `/api/*` for users, transactions, predictions, votes and jupiter proxy.
-
-
-      {
-  "name": "solana-prediction-frontend",
-  "version": "1.0.0",
+{
+  "name": "solana-vote-predict-frontend",
+  "version": "0.1.0",
   "private": true,
-  "scripts": {
-    "dev": "next dev -p 3000",
-    "build": "next build",
-    "start": "next start -p 3000"
-  },
   "dependencies": {
-    "@solana/wallet-adapter-base": "^0.9.27",
-    "@solana/wallet-adapter-react": "^0.15.39",
-    "@solana/wallet-adapter-react-ui": "^0.9.39",
-    "@solana/wallet-adapter-wallets": "^0.19.37",
-    "@solana/web3.js": "^1.98.4",
+    "@heroicons/react": "^2.0.18",
+    "@solana/wallet-adapter-base": "^0.9.14",
+    "@solana/wallet-adapter-react": "^0.16.10",
+    "@solana/wallet-adapter-react-ui": "^0.11.5",
+    "@solana/wallet-adapter-wallets": "^0.18.5",
+    "@solana/web3.js": "^1.79.0",
     "axios": "^1.4.0",
-    "next": "13.5.6",
-    "react": "18.2.0",
-    "react-dom": "18.2.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.1",
+    "tailwindcss": "^3.5.2"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   }
-}NEXT_PUBLIC_BACKEND_URL=http://localhost:4000
-NEXT_PUBLIC_SOLANA_NETWORK=devnet
-
-      
-
-      import '../styles/globals.css';
-import { SolanaWalletProvider } from '../components/WalletProvider';
-import Navbar from '../components/Navbar';
-
-function MyApp({ Component, pageProps }) {
-  return (
-    <SolanaWalletProvider>
-      <Navbar />
-      <main style={{ padding: 20 }}>
-        <Component {...pageProps} />
-      </main>
-    </SolanaWalletProvider>
-  );
 }
 
-export default MyApp;
+README.md
 
-      import React, { useMemo } from 'react';
-import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
-import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
-import {
-  PhantomWalletAdapter,
-  SolflareWalletAdapter,
-  BackpackWalletAdapter
-} from '@solana/wallet-adapter-wallets';
-import { clusterApiUrl } from '@solana/web3.js';
-import '@solana/wallet-adapter-react-ui/styles.css';
+# Solana Voting & Prediction Platform
 
-export const SolanaWalletProvider = ({ children }) => {
-  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'devnet';
-  const endpoint = useMemo(() => clusterApiUrl(network), [network]);
+Connect wallet, stake, swap tokens, trade NFTs, earn points, and participate in votes/predictions.
 
-  const wallets = useMemo(() => [
-    new PhantomWalletAdapter(),
-    new SolflareWalletAdapter(),
-    // Backpack may need import adjustments depending on package availability
-    ...(typeof BackpackWalletAdapter !== 'undefined' ? [new BackpackWalletAdapter()] : [])
-  ], []);
+vite.config.js
 
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({ plugins: [react()] })
+
+tailwind.config.cjs
+
+module.exports = {
+  content: ['./index.html', './src/**/*.{js,jsx,ts,tsx}'],
+  theme: { extend: {} },
+  plugins: [],
+}
+
+postcss.config.cjs
+
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+.env.example
+
+VITE_SOLANA_CLUSTER=https://api.devnet.solana.com
+VITE_JUPITER_API=https://quote-api.jup.ag
+VITE_BACKEND_URL=http://localhost:4000
+
+
+---
+
+src/main.jsx
+
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import App from './App'
+import './index.css'
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)
+
+src/index.css
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html, body, #root { height: 100%; }
+
+src/utils/solana.js
+
+import { Connection, clusterApiUrl } from '@solana/web3.js'
+export function getConnection(){
+  const cluster = import.meta.env.VITE_SOLANA_CLUSTER || clusterApiUrl('devnet')
+  return new Connection(cluster, 'confirmed')
+}
+
+src/components/WalletProvider.jsx
+
+import React, { useMemo } from 'react'
+import { ConnectionProvider, WalletProvider as SAWalletProvider } from '@solana/wallet-adapter-react'
+import { PhantomWalletAdapter, SolflareWalletAdapter, SlopeWalletAdapter } from '@solana/wallet-adapter-wallets'
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
+import { getConnection } from '../utils/solana'
+require('@solana/wallet-adapter-react-ui/styles.css')
+
+export default function WalletProvider({ children }){
+  const endpoint = import.meta.env.VITE_SOLANA_CLUSTER
+  const wallets = useMemo(() => [ new PhantomWalletAdapter(), new SolflareWalletAdapter(), new SlopeWalletAdapter() ], [])
   return (
     <ConnectionProvider endpoint={endpoint}>
-      <WalletProvider wallets={wallets} autoConnect>
-        <WalletModalProvider>
-          {children}
-        </WalletModalProvider>
-      </WalletProvider>
+      <SAWalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>{children}</WalletModalProvider>
+      </SAWalletProvider>
     </ConnectionProvider>
-  );
-};
+  )
+}
 
-import React from 'react';
-import Link from 'next/link';
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+src/components/Navbar.jsx
 
-export default function Navbar() {
+import React from 'react'
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import { Link } from 'react-router-dom'
+
+export default function Navbar(){
   return (
-    <nav style={{ display: 'flex', gap: 16, padding: 12, alignItems: 'center', background: 'linear-gradient(90deg,#0ea5e9,#3b82f6)' }}>
-      <div style={{ fontWeight: 700, color: '#fff' }}>Solana Prediction Hub</div>
-      <Link href="/"><a style={{ color: '#fff' }}>Dashboard</a></Link>
-      <Link href="/swap"><a style={{ color: '#fff' }}>Swap</a></Link>
-      <Link href="/nft-marketplace"><a style={{ color: '#fff' }}>NFTs</a></Link>
-      <Link href="/predictions"><a style={{ color: '#fff' }}>Predictions</a></Link>
-      <div style={{ marginLeft: 'auto' }}>
+    <nav className="p-4 bg-slate-900 text-white flex justify-between">
+      <div className="font-bold">SolVote</div>
+      <div className="space-x-4">
+        <Link to="/">Dashboard</Link>
+        <Link to="/staking">Staking</Link>
+        <Link to="/swap">Swap</Link>
+        <Link to="/nft">NFT</Link>
+        <Link to="/about">About</Link>
         <WalletMultiButton />
       </div>
     </nav>
-  );
+  )
 }
 
-      
-      const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:4000';
+src/hooks/usePoints.js
 
-export async function postJSON(path, body) {
-  const res = await fetch(`${BACKEND}/api${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  return res.json();
+import { useState, useEffect } from 'react'
+import axios from 'axios'
+export default function usePoints(publicKey){
+  const [points, setPoints] = useState(0)
+  useEffect(()=>{
+    if(!publicKey){ setPoints(0); return }
+    axios.get(`${import.meta.env.VITE_BACKEND_URL}/points/${publicKey}`).then(r=>{
+      setPoints(r.data.points||0)
+    }).catch(()=>{
+      const p = parseInt(localStorage.getItem(`points_${publicKey}`))||0
+      setPoints(p)
+    })
+  },[publicKey])
+  const addPoints = async amt => {
+    try{
+      await axios.post(`${import.meta.env.VITE_BACKEND_URL}/points/add`, { publicKey, amount: amt })
+      setPoints(p=>p+amt)
+    }catch{
+      const newv=(parseInt(localStorage.getItem(`points_${publicKey}`))||0)+amt
+      localStorage.setItem(`points_${publicKey}`,newv)
+      setPoints(newv)
+    }
+  }
+  return { points, addPoints }
 }
 
-export async function getJSON(path) {
-  const res = await fetch(`${BACKEND}/api${path}`);
-  return res.json();
-}
+src/components/Dashboard.jsx
 
-      
-      import React, { useEffect, useState } from 'react';
-import { useWallet, useConnection } from '@solana/wallet-adapter-react';
-import { LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { postJSON, getJSON } from '../lib/api';
+import React from 'react'
+import { useWallet } from '@solana/wallet-adapter-react'
+import usePoints from '../hooks/usePoints'
 
-export default function Dashboard() {
-  const { publicKey, connected } = useWallet();
-  const { connection } = useConnection();
-  const [balance, setBalance] = useState(0);
-  const [stats, setStats] = useState(null);
-
-  useEffect(() => {
-    if (!connected || !publicKey) return;
-    (async () => {
-      try {
-        const lamports = await connection.getBalance(publicKey);
-        setBalance(lamports / LAMPORTS_PER_SOL);
-
-        await postJSON('/users', { wallet_address: publicKey.toBase58() });
-        const s = await getJSON(`/users/${publicKey.toBase58()}/stats`);
-        setStats(s);
-      } catch (e) { console.error(e); }
-    })();
-  }, [publicKey, connected, connection]);
-
+export default function Dashboard(){
+  const { publicKey } = useWallet()
+  const { points } = usePoints(publicKey?.toBase58())
   return (
-    <div>
-      <h1>Dashboard</h1>
-      <div style={{ display: 'flex', gap: 20 }}>
-        <div style={{ padding: 16, borderRadius: 8, background: '#f8fafc' }}>
-          <h3>Wallet</h3>
-          <p>{publicKey ? publicKey.toBase58() : 'Not connected'}</p>
-          <p>Balance: {balance} SOL</p>
-        </div>
-        <div style={{ padding: 16, borderRadius: 8, background: '#f8fafc' }}>
-          <h3>Points</h3>
-          <p>{stats ? stats.points : '-'}</p>
-          <p>Staked: {stats ? stats.total_staked : '-'}</p>
-          <p>Trading Volume: {stats ? stats.trading_volume : '-'}</p>
-        </div>
+    <div className="p-6">
+      <h2 className="text-2xl mb-4">Dashboard</h2>
+      <div className="grid md:grid-cols-3 gap-4">
+        <div className="p-4 bg-white shadow">Wallet: {publicKey?.toBase58()||"Not connected"}</div>
+        <div className="p-4 bg-white shadow">Staked: 0 SOL</div>
+        <div className="p-4 bg-white shadow">Trading Volume: 0 SOL</div>
+        <div className="p-4 bg-white shadow">Points: {points}</div>
       </div>
     </div>
-  );
+  )
 }
 
-      import React, { useState } from 'react';
-import { postJSON } from '../lib/api';
+src/components/Staking.jsx
 
-export default function Swap() {
-  const [inputMint, setInputMint] = useState('');
-  const [outputMint, setOutputMint] = useState('');
-  const [amount, setAmount] = useState(0);
-  const [quote, setQuote] = useState(null);
+import React from 'react'
+import { useWallet } from '@solana/wallet-adapter-react'
+import usePoints from '../hooks/usePoints'
 
-  async function getQuote() {
-    const res = await postJSON('/jupiter/quote', { input_mint: inputMint, output_mint: outputMint, amount, slippage_bps: 50 });
-    setQuote(res.data || res);
+export default function Staking(){
+  const { publicKey } = useWallet()
+  const { addPoints } = usePoints(publicKey?.toBase58())
+  return (
+    <div className="p-6">
+      <h2 className="text-2xl mb-4">Staking</h2>
+      <button onClick={()=>addPoints(10)} className="px-4 py-2 bg-blue-600 text-white">Stake (mock)</button>
+    </div>
+  )
+}
+
+src/components/Swap.jsx
+
+import React, { useState } from 'react'
+import axios from 'axios'
+
+export default function Swap(){
+  const [fromMint, setFromMint] = useState('So11111111111111111111111111111111111111112')
+  const [toMint, setToMint] = useState('So11111111111111111111111111111111111111112')
+  const [amount, setAmount] = useState('')
+  const [quote, setQuote] = useState(null)
+
+  const getQuote = async () => {
+    try{
+      const api = import.meta.env.VITE_JUPITER_API
+      const res = await axios.get(`${api}/v4/quote`, {
+        params:{ inputMint: fromMint, outputMint: toMint, amount: Math.round(Number(amount)*1e9) }
+      })
+      setQuote(res.data)
+    }catch(e){ alert('Quote failed') }
   }
 
   return (
-    <div>
-      <h1>Swap (Jupiter)</h1>
-      <div style={{ display: 'grid', gap: 8, maxWidth: 600 }}>
-        <input placeholder="input mint" value={inputMint} onChange={e => setInputMint(e.target.value)} />
-        <input placeholder="output mint" value={outputMint} onChange={e => setOutputMint(e.target.value)} />
-        <input type="number" value={amount} onChange={e => setAmount(Number(e.target.value))} />
-        <button onClick={getQuote}>Get Quote</button>
-        <pre style={{ background: '#111', color: '#0f0', padding: 10 }}>{quote ? JSON.stringify(quote, null, 2) : 'No quote yet'}</pre>
-      </div>
+    <div className="p-6">
+      <h2 className="text-2xl mb-4">Swap</h2>
+      <input value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Amount" />
+      <button onClick={getQuote}>Get Quote</button>
+      {quote && <pre>{JSON.stringify(quote,null,2)}</pre>}
     </div>
-  );
-}import React, { useEffect, useState } from 'react';
-import { getJSON } from '../lib/api';
-
-export default function NFTMarketplace() {
-  const [collections, setCollections] = useState([]);
-
-  useEffect(() => {
-    (async () => {
-      const res = await getJSON('/nfts/collections');
-      setCollections(res.data || []);
-    })();
-  }, []);
-
-  return (
-    <div>
-      <h1>NFT Marketplace (Mock)</h1>
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        {collections.map(c => (
-          <div key={c.symbol} style={{ padding: 12, borderRadius: 8, background: '#fff', width: 240 }}>
-            <img src={c.image} alt={c.name} style={{ width: '100%', height: 140, objectFit: 'cover' }} />
-            <h3>{c.name}</h3>
-            <p>Floor: {c.floor_price}</p>
-            <p>24h Volume: {c.volume_24h}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-import React, { useEffect, useState } from 'react';
-import { getJSON, postJSON } from '../lib/api';
-import { useWallet } from '@solana/wallet-adapter-react';
-
-export default function Predictions() {
-  const [predictions, setPredictions] = useState([]);
-  const { publicKey } = useWallet();
-
-  useEffect(() => {
-    (async () => {
-      const res = await getJSON('/predictions');
-      setPredictions(res || []);
-    })();
-  }, []);
-
-  async function vote(predictionId, option) {
-    if (!publicKey) return alert('Connect wallet');
-    const res = await postJSON('/votes', { prediction_id: predictionId, user_wallet: publicKey.toBase58(), option, points_used: 10 });
-    alert(res.error ? res.error : 'Voted!');
-  }
-
-  return (
-    <div>
-      <h1>Predictions</h1>
-      <div style={{ display: 'grid', gap: 12 }}>
-        {predictions.map(p => (
-          <div key={p._id} style={{ padding: 12, borderRadius: 8, background: '#fff' }}>
-            <h3>{p.title}</h3>
-            <p>{p.description}</p>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {(p.options || []).map(opt => (
-                <button key={opt} onClick={() => vote(p._id, opt)}>{opt}</button>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  )
 }
 
-      html,body,#__next { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background: linear-gradient(180deg,#071013,#001219); color: #e6f0ff; }
-a { color: inherit; text-decoration: none; }
-button { cursor: pointer; padding: 8px 12px; border-radius: 8px; border: none; background: #06b6d4; color: #052026; }
-input { padding: 8px 10px; border-radius: 8px; border: 1px solid #0ea5e9; }
-main { max-width: 1100px; margin: 24px auto; }
+src/components/NFTMarket.jsx
 
-      
-      
+import React from 'react'
+export default function NFTMarket(){ return <div className="p-6">NFT Market</div> }
+
+src/components/About.jsx
+
+import React from 'react'
+export default function About(){ return <div className="p-6">About Platform</div> }
+
+src/App.jsx
+
+import React from 'react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import WalletProvider from './components/WalletProvider'
+import Navbar from './components/Navbar'
+import Dashboard from './components/Dashboard'
+import Staking from './components/Staking'
+import Swap from './components/Swap'
+import NFTMarket from './components/NFTMarket'
+import About from './components/About'
+
+export default function App(){
+  return (
+    <WalletProvider>
+      <BrowserRouter>
+        <Navbar />
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/staking" element={<Staking />} />
+          <Route path="/swap" element={<Swap />} />
+          <Route path="/nft" element={<NFTMarket />} />
+          <Route path="/about" element={<About />} />
+        </Routes>
+      </BrowserRouter>
+    </WalletProvider>
+  )
+}
 
 
-      
-      
+---
+
+server/index.js
+
+const express = require('express')
+const cors = require('cors')
+const app = express()
+app.use(cors())
+app.use(express.json())
+const store = {}
+app.get('/points/:pk',(req,res)=>res.json({points:store[req.params.pk]||0}))
+app.post('/points/add',(req,res)=>{
+  const {publicKey,amount}=req.body
+  store[publicKey]=(store[publicKey]||0)+(amount||0)
+  res.json({points:store[publicKey]})
+})
+app.listen(4000)
+
+server/package.json
+
+{
+  "name": "solvote-server",
+  "version": "0.1.0",
+  "main": "index.js",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "scripts": { "start": "node index.js" }
+}
